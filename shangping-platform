@@ -1,0 +1,416 @@
+# -*- coding: utf-8 -*-
+"""基于模板生成《商域智检 需求说明书》：保留封面/页眉页脚/样式/TOC 域结构，
+替换封面字段、目录静态行与正文内容。"""
+import io
+import re
+import sys
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", write_through=True)
+
+SRC = "tpl_unpacked/word/document.xml"
+
+
+def esc(t):
+    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# ---------------- XML 构件（复刻模板骨架） ----------------
+FONT = '<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体" w:cs="Times New Roman"/>'
+KERN0 = '<w:kern w:val="0"/>'
+SZCS21 = '<w:szCs w:val="21"/>'
+
+
+def h3(text):
+    return (f'<w:p><w:pPr><w:pStyle w:val="3"/><w:rPr>{FONT}{KERN0}</w:rPr></w:pPr>'
+            f'<w:r><w:rPr>{FONT}</w:rPr><w:t>{esc(text)}</w:t></w:r></w:p>')
+
+
+def h4(text):
+    return (f'<w:p><w:pPr><w:pStyle w:val="4"/><w:rPr>{FONT}{KERN0}</w:rPr></w:pPr>'
+            f'<w:r><w:rPr>{FONT}</w:rPr><w:t>{esc(text)}</w:t></w:r></w:p>')
+
+
+def p(text):
+    return (f'<w:p><w:pPr><w:widowControl/><w:spacing w:after="160" w:line="312" w:lineRule="auto"/>'
+            f'<w:ind w:firstLine="480"/><w:jc w:val="left"/>'
+            f'<w:rPr>{FONT}{KERN0}{SZCS21}</w:rPr></w:pPr>'
+            f'<w:r><w:rPr>{FONT}{KERN0}{SZCS21}</w:rPr><w:t>{esc(text)}</w:t></w:r></w:p>')
+
+
+def li(text):
+    return (f'<w:p><w:pPr><w:pStyle w:val="67"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'
+            f'<w:ind w:firstLineChars="0"/>'
+            f'<w:rPr>{FONT}</w:rPr></w:pPr>'
+            f'<w:r><w:rPr>{FONT}</w:rPr><w:t>{esc(text)}</w:t></w:r></w:p>')
+
+
+def toc_line(level, text, page, first=False):
+    style = "18" if level == 1 else "12"
+    head = ""
+    if first:
+        head = ('<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体"/>'
+                '<w:sz w:val="28"/><w:szCs w:val="36"/></w:rPr><w:fldChar w:fldCharType="begin"/></w:r>'
+                '<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/></w:rPr>'
+                '<w:instrText xml:space="preserve"> TOC \\o &quot;1-3&quot; \\h \\z \\u </w:instrText></w:r>'
+                '<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="宋体"/>'
+                '<w:sz w:val="28"/><w:szCs w:val="36"/></w:rPr><w:fldChar w:fldCharType="separate"/></w:r>')
+    return (f'<w:p><w:pPr><w:pStyle w:val="{style}"/>'
+            f'<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8296"/></w:tabs>'
+            f'<w:rPr><w:kern w:val="2"/><w:sz w:val="21"/><w:szCs w:val="22"/></w:rPr></w:pPr>'
+            f'{head}'
+            f'<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>'
+            f'<w:sz w:val="21"/><w:szCs w:val="22"/></w:rPr><w:t>{esc(text)}</w:t></w:r>'
+            f'<w:r><w:tab/></w:r>'
+            f'<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>'
+            f'<w:sz w:val="21"/><w:szCs w:val="22"/></w:rPr><w:t>{page}</w:t></w:r></w:p>')
+
+
+TBLPR = ('<w:tblPr><w:tblStyle w:val="22"/><w:tblW w:w="0" w:type="auto"/><w:jc w:val="center"/>'
+         '<w:tblBorders>'
+         '<w:top w:val="single" w:color="auto" w:sz="12" w:space="0"/>'
+         '<w:bottom w:val="single" w:color="auto" w:sz="12" w:space="0"/>'
+         '<w:insideH w:val="single" w:color="auto" w:sz="6" w:space="0"/>'
+         '</w:tblBorders><w:tblLayout w:type="fixed"/>'
+         '<w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="108" w:type="dxa"/>'
+         '<w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr>')
+
+
+def tc(text, width, header=False, center=False):
+    shd = '<w:shd w:val="clear" w:color="auto" w:fill="D9D9D9"/>' if header else ""
+    jc = "center" if (header or center) else "left"
+    bold = "<w:b/>" if header else ""
+    return (f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/>{shd}<w:vAlign w:val="center"/></w:tcPr>'
+            f'<w:p><w:pPr><w:spacing w:line="312" w:lineRule="auto"/>'
+            f'<w:ind w:firstLine="0" w:firstLineChars="0"/><w:jc w:val="{jc}"/>'
+            f'<w:rPr><w:rFonts w:hint="eastAsia" w:ascii="宋体" w:hAnsi="宋体" w:eastAsia="宋体"/>{bold}</w:rPr></w:pPr>'
+            f'<w:r><w:rPr><w:rFonts w:hint="eastAsia" w:ascii="宋体" w:hAnsi="宋体" w:eastAsia="宋体"/>{bold}</w:rPr>'
+            f'<w:t>{esc(text)}</w:t></w:r></w:p></w:tc>')
+
+
+def table(widths, headers, rows):
+    n = len(widths)
+    grid = "<w:tblGrid>" + "".join(f'<w:gridCol w:w="{w}"/>' for w in widths) + "</w:tblGrid>"
+    out = ["<w:tbl>", TBLPR, grid]
+    out.append("<w:tr>" + "".join(tc(h, w, header=True) for h, w in zip(headers, widths)) + "</w:tr>")
+    for r in rows:
+        out.append("<w:tr>" + "".join(tc(str(c), w) for c, w in zip(r, widths)) + "</w:tr>")
+    out.append("</w:tbl>")
+    # 表格后补一个空段，避免表格粘连
+    out.append('<w:p><w:pPr><w:ind w:firstLine="0"/><w:rPr><w:sz w:val="21"/></w:rPr></w:pPr></w:p>')
+    return "".join(out)
+
+
+def use_case(no, name, actor, desc, pre, post, flow, alt=""):
+    return table([1560, 6245],
+                 ["项目", "内容"],
+                 [["用例编号", no], ["用例名称", name], ["参与者", actor], ["说明", desc],
+                  ["前置条件", pre], ["后置条件", post], ["基本流", flow], ["备选流", alt]])
+
+
+# ---------------- 正文内容 ----------------
+body = []
+body.append(h3("1．引言"))
+body.append(h4("1.1 编写目的"))
+body.append(p("本需求说明书的目的是说明“商域智检——智能零售全链路优化平台”（以下简称“本平台”）最终需要满足的条件和限制，明确系统的功能需求、非功能性需求与运行环境约束，为后续的系统设计、编码实现、测试验收提供统一依据。本文档的预期读者为项目团队成员、课程指导教师及评审人员。"))
+body.append(h4("1.2 项目背景"))
+body.append(li("系统名称：商域智检——智能零售全链路优化平台。"))
+body.append(li("需求背景：传统零售门店在商品识别、收银结算、库存盘点与销售决策等环节高度依赖人工，存在识别效率低、收银排队时间长、库存数据滞后、补货决策缺乏数据支撑等痛点。随着计算机视觉技术与机器学习预测方法的发展，以商品检测模型为核心的无人零售与智能运营方案已具备落地条件。"))
+body.append(li("系统用途：本平台以自研 CBSM-YOLO 商品检测模型与 RPC 200 类零售商品检测模型为核心，将“商品识别、无人收银、销售决策、商品管理”整合为统一的数据驾驶舱。使用者可通过监控识别页完成摄像头/图片两种模式的商品识别并自动生成结算清单；可在总览大屏、区域详情、销售预测、订单、库存、预警等页面完成全链路运营管理。"))
+body.append(li("系统使用范围：主要应用于连锁零售门店（旗舰店、社区店、便利店）的日常运营管理场景，面向 PC 端浏览器。"))
+body.append(li("其他要求：平台为 B/S 架构 Web 服务，前端采用 Vue 3 + TypeScript + Vite 构建，深空蓝科技风数据大屏主题，推荐 1280 像素及以上分辨率访问；后端按“数据服务、检测服务、图片服务”三个独立服务部署，可分别启停、互不影响。"))
+body.append(li("开发团队说明：开发团队包含必要的项目经理、算法工程师、前端工程师、后端工程师与测试文档人员，成员分工如下表所示。"))
+body.append(table([1117, 4698, 1990],
+                  ["姓名", "负责内容", "完成情况"],
+                  [["XXX（组长）", "项目经理／系统架构：负责需求分析、总体设计、进度管理、三服务架构与数据库设计", "已完成"],
+                   ["XXX", "算法工程师：负责 CBSM-YOLO 模型维护、RPC 200 类模型与数据迁移、销售预测模型训练与回测", "已完成"],
+                   ["XXX", "前端工程师：负责 Vue3 前端 11 个页面的开发、ECharts 可视化与交互组件实现", "已完成"],
+                   ["XXX", "后端工程师：负责 FastAPI 数据服务、检测服务、图片服务及 85 个 REST 接口的开发", "已完成"],
+                   ["XXX", "测试与文档：负责功能测试、端到端验证与需求说明书的撰写维护", "已完成"]]))
+
+body.append(h3("2．任务概述"))
+body.append(h4("2.1 目标"))
+body.append(p("本系统旨在将零售门店的商品识别、收银结算、销售分析、库存预警与补货决策整合到统一平台，用自动识别替代人工录入，用数据模型替代经验判断，从而缩短收银结算时间、提高库存数据准确性、增强补货决策的科学性，使零售运营更加高效、智能、可靠。平台各业务模块的数据均落数据库存储，保证多端一致性，并为后续的经营分析提供完整数据基础。"))
+body.append(h4("2.2 用户特点"))
+body.append(p("从业务流程角度，本系统用户可分为以下几类：门店店长、运营分析员、收银员、系统管理员。各类用户的说明如下表所示："))
+body.append(table([1300, 3100, 2300, 1105],
+                  ["角色", "本系统内主要行为简述", "使用本系统需必备的条件", "是否需要培训"],
+                  [["门店店长", "查看总览大屏与区域详情，掌握销售、毛利与库存预警全貌，做出补货与调价决策", "拥有上网经验，能够独立完成登录、浏览图表、下钻明细等操作", "需要简单培训"],
+                   ["运营分析员", "查看销售预测与商品排行，制定补货计划；管理商品目录与供应商信息", "熟悉 Excel 等分析工具，理解销量、毛利、利润率等基本经营指标", "需要简单培训"],
+                   ["收银员", "通过监控识别页完成商品识别、清单核对与扫码收款", "能够操作摄像头/上传图片，完成简单的确认结算流程", "无需培训"],
+                   ["系统管理员", "管理用户与权限、平台设置、识别模型参数，处理系统级预警", "具备Web系统管理经验，经培训后熟悉平台设置与审计日志的管理方法", "需要特别培训"]]))
+body.append(p("从使用系统的角度，上述用户均应在系统中留有记录，这需要通过登录鉴权来实现。系统内置超级管理员账号（admin），并支持注册新用户；未完成登录的用户可通过演示链接只读浏览部分页面，相当于“游客”身份。"))
+body.append(h4("2.3 术语定义"))
+body.append(table([2200, 5605],
+                  ["术语", "定义"],
+                  [["CBSM-YOLO", "本项目自研的单阶段商品检测模型，面向密集货架与遮挡场景优化，用于门店货架的实时商品识别。"],
+                   ["RPC 200 类", "RPC（Retail Product Checkout）零售商品结账数据集定义的 200 类细粒度零售商品，本平台迁移其训练权重与商品价格目录用于检测结算。"],
+                   ["无人收银", "顾客取走商品即被摄像头识别并自动计入结算清单，离场时扫码支付完成交易的零售模式。"],
+                   ["HistGradientBoosting", "直方图梯度提升回归模型（与 M5 零售预测竞赛冠军方案同族），本平台用于商品销量预测。"],
+                   ["WMAPE", "加权平均绝对百分比误差（Σ|实际-预测|/Σ实际），按销量加权的预测精度评价指标，数值越低预测越准。"],
+                   ["三服务架构", "数据服务（FastAPI+SQLite，:8001）、检测服务（YOLO，:8000）、图片服务（:8011）三个可独立启停的后端服务，前端经 Vite 代理访问。"]]))
+body.append(h4("2.4 参考资料"))
+body.append(li("[1] 吕云翔，王昕鹏，邱玉龙. 软件工程——理论与实践. 北京：人民邮电出版社，2012."))
+body.append(li("[2] Makridakis S, et al. The M5 Accuracy competition: Results, findings, and conclusions. International Journal of Forecasting, 2022."))
+body.append(li("[3] RPC: A Large-Scale Retail Product Checkout Dataset（零售商品结账数据集论文）."))
+body.append(li("[4] UCI Machine Learning Repository. Online Retail II 数据集（英国在线零售商 2009-2011 年真实交易记录）."))
+body.append(li("[5] Vue.js 3 / Vite / ECharts / FastAPI / Ultralytics YOLO 官方文档."))
+body.append(h4("2.5 相关文档"))
+body.append(p("暂无。"))
+body.append(h4("2.6 版本更新信息"))
+body.append(table([1100, 1500, 5205],
+                  ["版本", "日期", "更新内容"],
+                  [["v1.0", "2026-07", "完成前后端分离架构、9 大业务页面与数据服务基础接口，全部业务数据落库。"],
+                   ["v2.0", "2026-09", "新增销售分析、库存管理、识别监控、操作审计、通知中心、用户权限、报表中心七大模块，接口扩充至约 85 个。"],
+                   ["v2.1", "2026-09", "迁移 RPC 平台：导入 200 类检测商品（含实物图）、检测后端切换 YOLOv11x 权重、监控识别自动生成结算清单并联动库存/订单/识别记录。"],
+                   ["v2.2", "2026-09", "销售预测改为真实数据训练的梯度提升模型驱动；总览/区域/商品各模块趋势曲线改用真实交易数据且互不相同；新增区域全部商品排行页与图例、排行横向滑动条。"]]))
+
+body.append(h3("3．现有系统描述"))
+body.append(h4("3.1 角色定义"))
+body.append(p("在现有传统零售门店中，与商品销售相关的主要角色包括：收银员（人工扫码/录入完成收银）、理货员（巡检货架并手工盘点库存）、店长（依据经验制定补货与促销决策）、财务人员（手工核对销售单据与报表）。"))
+body.append(h4("3.2 作业流程"))
+body.append(p("现行业务以人工流程为主：顾客选购商品后在收银台排队，由收银员逐件扫码或手工录入完成收银并打印小票；理货员按固定周期巡检货架，手工记录缺货与损耗并汇总成台账；店长定期依据台账与经验估算补货量，向供应商下达采购单。整个流程中商品识别依赖人眼与扫码枪，数据采集滞后且易出错。"))
+body.append(h4("3.3 单据、账本和报表"))
+body.append(p("现有系统的单据与账本主要包括：销售小票、收银日报、手工库存台账、采购申请单与供应商对账单；报表主要为周/月销售汇总表，由人工从收银系统导出后用电子表格加工而成，维度单一且时效性差。"))
+body.append(h4("3.4 可能的变化"))
+body.append(p("随着无人零售与视觉识别技术的成熟，商品识别、结算与库存联动环节可由检测模型自动完成；销售预测可由机器学习模型基于真实历史交易数据自动给出；管理报表可由数据服务实时聚合生成。本平台即针对上述变化进行设计，替代原有人工作业环节。"))
+
+body.append(h3("4．非技术要求"))
+body.append(li("交付要求：项目需交付可运行的完整系统（前端源码、三个后端服务源码、数据库脚本与种子数据、模型权重文件）、本需求说明书及部署启动说明。"))
+body.append(li("开发规范：前端遵循 Vue 3 组合式 API 与 TypeScript 强类型规范；后端遵循 FastAPI 分层路由规范；数据库变更须保持对旧库的幂等兼容。"))
+body.append(li("演示要求：系统需支持一键启动演示（提供各服务的启动脚本），演示数据自动播种，能够完整展示商品识别、自动结算、销售预测等核心流程。"))
+body.append(li("文档要求：需求、设计与测试文档齐备，接口提供 OpenAPI 交互文档（/docs），关键代码有注释。"))
+body.append(li("进度要求：按里程碑交付，需求分析、系统设计、编码实现、测试验收四阶段依次完成，最终进行成果答辩与现场演示。"))
+
+body.append(h3("5．系统环境"))
+body.append(h4("5.1 硬件运行环境"))
+body.append(li("检测服务：建议使用 NVIDIA GPU（显存 ≥ 6GB，支持 CUDA），以保障实时识别帧率；无 GPU 时自动降级为 CPU 推理，速度变慢但功能可用。"))
+body.append(li("数据服务与前端：普通 PC 服务器或开发机即可（4 核 CPU / 8GB 内存以上），无 GPU 依赖。"))
+body.append(li("客户端：1280×720 及以上分辨率的显示器，配有摄像头（使用摄像头识别模式时）。"))
+body.append(h4("5.2 软件运行环境"))
+body.append(li("操作系统：Windows 10/11（Linux 亦可）。"))
+body.append(li("前端运行环境：Node.js ≥ 18，现代浏览器（Chrome / Edge）。"))
+body.append(li("后端运行环境：Python ≥ 3.9；数据服务依赖 fastapi、uvicorn、pydantic、openpyxl；检测服务依赖 torch、ultralytics（运行于 yolo-train conda 环境）。"))
+body.append(li("数据库：SQLite（标准库 sqlite3，免安装，单文件 shangyu.db，首次启动自动建库播种）。"))
+body.append(h4("5.3 开发环境"))
+body.append(li("前端：Vue 3.5（组合式 API + TypeScript）+ Vue Router 4 + Vite 5 + ECharts 5，纯 CSS 变量自研深空蓝科技主题，无第三方 UI 库。"))
+body.append(li("后端：FastAPI + Uvicorn + Pydantic v2，按 routers 分层组织约 85 个 REST 接口，内置操作审计中间件。"))
+body.append(li("算法：Ultralytics YOLOv11 训练框架；销售预测采用 scikit-learn HistGradientBoostingRegressor，训练管线与预测产物（forecast_model.json）随项目交付。"))
+body.append(li("工具链：esbuild 数据导出脚本（seed.json 播种）、CSV/XLSX 报表导出、LibreOffice 文档转换等。"))
+
+body.append(h3("6．非功能性需求"))
+body.append(h4("6.1 正确性需求"))
+body.append(p("商品识别结果须与检测服务返回一致，识别清单的数量、单价、小计与结算总额计算准确无误；库存扣减、订单生成与识别记录写入保持事务一致（一笔结算三项落库）；各聚合统计（销售额、毛利、库存状态）由服务端统一计算，保证多端一致。"))
+body.append(h4("6.2 安全性需求"))
+body.append(p("登录口令采用 PBKDF2-SHA256 加盐哈希存储，登录成功后签发 Bearer Token，后续请求携带 Token 鉴权，401 自动跳回登录页；用户口令响应脱敏；所有写操作由审计中间件自动记录到操作审计日志；用户管理支持启用/停用与超级管理员保护。"))
+body.append(h4("6.3 界面需求"))
+body.append(p("平台为深空蓝科技风数据大屏主题，推荐 1280×720 及以上分辨率；共 11 个业务页面（总览大屏、监控识别、商品管理、商品详情、区域详情、区域商品排行、销售预测、订单管理、库存管理、预警中心、系统设置）加登录/注册页；页面导航、面包屑、下拉浮层、模态框交互一致；窄面板下的文字溢出通过横向滑动条解决。"))
+body.append(h4("6.4 数据要求"))
+body.append(p("业务数据统一存放在 SQLite 数据库 shangyu.db，共 14 张表（商品、订单与行项目、评论、评分、用户、设置、预警、分店库存、库存流水、供应商、采购单与明细、识别记录、通知、审计日志），首次启动自动建表并播种约 2000 条演示数据；商品目录含 169 个平台商品与 200 个 RPC 检测商品（含实物图）。"))
+body.append(h4("6.5 稳定性需求"))
+body.append(p("检测服务的识别请求失败不得影响数据服务正常读写；审计日志写入异常自动吞掉，绝不影响主请求；图片服务未启动时前端自动降级为内置商品图。"))
+body.append(h4("6.6 灵活性需求"))
+body.append(p("数据服务端口、检测权重路径、推理设备可通过环境变量覆盖；销售预测在预测产物缺失时自动回退到静态演示数据；门店（旗舰店/社区店/便利店）库存数据相互独立，可按门店切换查看。"))
+body.append(h4("6.7 扩展性需求"))
+body.append(p("三个后端服务相互独立、可分别启停与替换；检测模型通过环境变量更换权重（如从 CBSM-YOLO 切换到 YOLOv11x·RPC）；REST 接口按 OpenAPI 规范暴露，便于后续接入小程序或第三方系统。"))
+body.append(h4("6.8 数据管理能力需求"))
+body.append(p("支持商品、订单、供应商、采购单的增删改查与批量导入（CSV/粘贴）；提供 CSV/XLSX 报表导出（RFC 5987 中文文件名）；库存出入库流水全程留痕；审计日志按上限滚动清理。"))
+body.append(h4("6.9 故障处理能力需求"))
+body.append(p("数据服务离线时，前端给出明确提示并自动降级（登录演示兜底、预测回退静态数据、库存联动跳过）；检测服务离线时摄像头画面保持实时预览并提示启动方法；恢复后无需刷新即可重新拉取数据。"))
+body.append(h4("6.10 特殊需求"))
+body.append(p("监控识别页在 rAF 动画帧不可用的 WebView 环境下需自动降级动画驱动，保证页面不因过渡动画卡死而空白；所有表格在数据溢出时提供可见的滑动条（品类分布图例、商品排行为横向，商品排行详情页为纵向）。"))
+
+body.append(h3("7．功能需求"))
+body.append(h4("7.1 子系统划分"))
+body.append(p("本平台由 1 个 Web 前端与 3 个后端服务组成。前端包含 10 个业务页面模块；后端分为数据服务（FastAPI+SQLite，商品/订单/库存/预警/分析/审计等约 85 个接口）、检测服务（YOLOv11x·RPC 200 类商品检测）与图片服务（商品照片上传管理）。子系统划分如下表所示："))
+body.append(table([1900, 1800, 4105],
+                  ["子系统", "对应页面", "核心职责"],
+                  [["总览大屏", "/overview", "识别/销售/毛利/预警 KPI、区域销售对比、周销售趋势（真实交易数据）、品类占比与商品排行榜"],
+                   ["监控识别", "/monitor", "摄像头/图片两种识别模式，YOLOv11x 实时检测，自动生成识别清单与结算金额，确认结算一笔落三库"],
+                   ["商品管理", "/products、/product/:id", "商品增删改查、库存调整、批量导入、商品照片上传、商品详情与月度销售趋势"],
+                   ["区域详情", "/region/:id、/region/:id/rank", "区域 KPI、周销售趋势、库存预警、品类分布、商品排行与全部商品排行页"],
+                   ["销售预测", "/forecast", "基于真实交易训练的梯度提升模型，输出未来 6 个月预测曲线、补货建议与风险分布"],
+                   ["订单管理", "/orders", "订单筛选/分页/详情/删除，近 7 天订单量与销售额趋势，订单导出"],
+                   ["库存管理", "/inventory", "多门店库存、补货/调整、批量导入商品、库存状态分布"],
+                   ["预警中心", "/alerts", "库存/识别/系统三类预警的筛选、处理与忽略"],
+                   ["系统设置与用户中心", "/settings、/user-center", "店铺信息、识别参数、数据备份、安全设置；个人资料、评论评分管理"],
+                   ["数据/检测/图片服务", ":8001 / :8000 / :8011", "REST 接口、SQLite 存储、商品检测推理、商品照片管理"]]))
+body.append(h4("7.2 用例说明"))
+body.append(p("以下给出本平台核心业务的用例模型，每个用例以表格说明其参与者、前置条件、基本流与备选流。"))
+body.append(use_case("UC-01", "监控识别自动结算",
+                     "收银员",
+                     "通过摄像头或上传货架图片识别商品，自动生成结算清单并完成扫码收款，支付完成后库存、订单、识别记录一次落库。",
+                     "收银员已登录；检测服务在线（检测服务离线时给出明确提示）；已切换到摄像头或图片识别模式。",
+                     "结算清单与结算金额展示正确；支付完成后对应商品库存扣减、生成“无人收银”订单、写入识别事件记录。",
+                     "1. 收银员进入监控识别页，选择摄像头或图片模式；\n2. 连接摄像头并开始识别，或上传货架照片；\n3. 系统调用检测服务返回检测框与识别清单（品类×数量×单价×小计）并实时汇总结算金额；\n4. 收银员核对清单后点击“确认结算”；\n5. 系统弹出微信/支付宝收款码，收银员完成收款并点击“支付完成”；\n6. 系统按清单逐项扣减库存、生成无人收银订单并写入识别事件记录。"))
+body.append(use_case("UC-02", "商品目录管理",
+                     "运营分析员",
+                     "对商品目录进行新增、编辑、删除与库存调整，并支持 CSV 批量导入。",
+                     "运营分析员已登录且具备相应权限；数据服务在线。",
+                     "商品数据落库并即时反映到各页面；调整库存后状态（正常/预警/低库存）自动重算。",
+                     "1. 进入商品管理页，按区域/品类/关键字筛选商品；\n2. 点击新增/编辑填写商品信息并上传商品照片；\n3. 提交后系统自动计算销售额、利润与库存状态；\n4. 对需要补货的商品执行补货入库或库存调整；\n5. 需要时通过 CSV 文件或粘贴批量导入商品。"))
+body.append(use_case("UC-03", "查看销售预测与补货建议",
+                     "门店店长、运营分析员",
+                     "查看基于真实交易数据训练的梯度提升模型输出的未来 6 个月销量预测、逐商品补货建议与风险分布。",
+                     "数据服务在线且存在预测产物（forecast_model.json），否则自动回退演示数据。",
+                     "页面正确展示历史+预测曲线、回测指标、逐商品预测销量/建议补货量/风险等级。",
+                     "1. 进入销售预测页；\n2. 查看历史销量与预测销量曲线及回测 WMAPE 指标；\n3. 查看下月预测销量、预测销售额、建议补货量与利润潜力卡片；\n4. 在明细表中逐商品查看预测销量、当前库存、建议补货量与风险等级；\n5. 点击商品可打开快速卡查看详情。"))
+body.append(use_case("UC-04", "库存预警处理",
+                     "门店店长",
+                     "处理库存、识别与系统三类预警，保持门店库存健康。",
+                     "店长已登录；存在待处理预警。",
+                     "预警状态更新为已处理/已忽略，顶栏预警角标同步减少。",
+                     "1. 进入预警中心或顶栏预警下拉；\n2. 按类型/级别/状态筛选预警；\n3. 查看预警详情并跳转对应商品；\n4. 执行处理或忽略操作；\n5. 系统记录处理结果并刷新角标。"))
+body.append(use_case("UC-05", "查看区域全部商品排行",
+                     "门店店长、运营分析员",
+                     "从区域详情页的商品排行面板进入全部商品排行页，纵向滚动查看区域内全部商品的完整属性。",
+                     "数据服务在线。",
+                     "排行页展示区域内全部商品（销量降序）的排名、名称/SKU、品类、价格、成本、销量、销售额、利润、利润率、库存与状态。",
+                     "1. 进入区域详情页；\n2. 在商品排行面板点击“查看全部”；\n3. 系统跳转到区域全部商品排行页；\n4. 通过表格右侧的上下滑动条浏览全部商品；\n5. 点击任意商品行可打开商品快速卡。"))
+body.append(h4("7.3 总览大屏子系统"))
+body.append(li("功能概述：以数据大屏形式呈现门店经营全貌，数据来自 /api/overview 实时聚合。"))
+body.append(li("识别 KPI：识别总次数、识别成功率、销售总额、毛利总额、库存预警五项指标卡，含环比变化。"))
+body.append(li("区域销售对比：TOP4 区域销售额排名条，点击可跳转对应区域详情。"))
+body.append(li("销售趋势：近一周销售额与毛利双序列曲线，数据来自真实完整自然周的每日成交。"))
+body.append(li("库存预警与商品排行：低库存商品列表（点击直达商品）与本月销量 TOP8 排行。"))
+body.append(li("品类销售占比：环形图展示主要品类销售额占比，小品类自动归并为“其他”。"))
+body.append(h4("7.4 监控识别子系统"))
+body.append(li("识别模式：支持摄像头（getUserMedia 实时取帧）与图片上传两种模式；识别帧率、阈值可调。"))
+body.append(li("检测结果：画面叠加检测框并标注品类与置信度；右侧“实时检测”卡显示检测数、平均置信度与推理耗时。"))
+body.append(li("自动结算：检测服务按 RPC 商品价格目录聚合识别清单（数量/单价/小计）与结算总额，随帧实时更新。"))
+body.append(li("确认结算：弹窗展示微信/支付宝收款码，支付完成后按清单扣减库存、生成无人收银订单并逐项写入识别记录。"))
+body.append(li("事件记录：识别/库存/预警/结算事件实时滚动记录，可按类型筛选。"))
+body.append(li("降级策略：检测服务离线时给出明确提示，摄像头保持实时预览；抓拍功能保存最近 5 张快照。"))
+body.append(h4("7.5 商品与区域子系统"))
+body.append(li("商品管理：分页列表支持区域/品类/库存状态/关键字筛选；新增与编辑表单校验并自动计算派生字段；支持删除与库存调整（补货入库/设置库存），状态自动重算；支持 CSV/粘贴批量导入。"))
+body.append(li("商品详情：展示商品照片（可上传/更换/恢复）、价格成本、累计销售额/利润/销量、评分评论与月度销售/利润趋势（真实商品级月度序列）。"))
+body.append(li("区域详情：区域 KPI（月销售额/利润/热销商品/库存预警数）、商品排行 TOP10（点击“查看全部”进入全部商品排行页）、周销售趋势（该区域真实商品切片的每日成交，10 个区域形状互不相同）、库存预警商品、区域摄像头与品类分布（环形图+横向滑动的图例条，占比不足 1% 的品类归并为“其他”）。"))
+body.append(li("区域商品排行页：展示区域内全部商品的排名、名称/SKU、品类、价格、成本、销量、销售额、利润、利润率、库存与状态，表体在右侧通过上下滑动条浏览全部行，点击行打开商品快速卡。"))
+body.append(h4("7.6 销售预测子系统"))
+body.append(li("数据与训练：以 UCI Online Retail II 真实电商交易（2009-12~2011-11，24 个完整月，约 100 万行）为训练数据，聚合全站与商品级月度销量序列，训练 HistGradientBoosting 梯度提升模型（特征：多阶滞后、滚动均值、月份正余弦编码、序列量级加权）。"))
+body.append(li("模型择优：留出最后 6 个月滚动回测，与 Seasonal Naive、Holt-Winters 基线对比；HistGradientBoosting 商品级归一化 RMSE 2.07 为三模型最优，各模型指标在页面如实展示。"))
+body.append(li("预测输出：未来 6 个月全站预测曲线（与真实历史曲线拼接展示）、20 个商品的预测销量/建议补货量/预计销售额/利润潜力/风险等级（高/中/低，按库存覆盖月数分档）与风险分布环图。"))
+body.append(li("降级策略：预测产物缺失时自动回退到静态演示数据，页面展示回退提示。"))
+body.append(h4("7.7 订单与库存子系统"))
+body.append(li("订单管理：订单分页列表支持状态/渠道/时间范围/关键字筛选；详情弹窗展示行项目；支持删除与 CSV 导出；近 7 天订单量与销售额趋势图。"))
+body.append(li("库存管理：门店（A 旗舰店/B 社区店/C 便利店）库存独立查看；补货入库与库存调整实时改写库存并生成流水；库存状态分布环形图；商品批量导入。"))
+body.append(h4("7.8 预警与设置子系统"))
+body.append(li("预警中心：库存/识别/系统三类预警，支持类型、级别、状态筛选与处理/忽略操作；顶栏铃铛下拉展示待处理预警摘要。"))
+body.append(li("系统设置：店铺信息、识别与模型参数、数据与备份、安全与权限四个分组，支持修改与恢复默认。"))
+body.append(h4("7.9 用户中心子系统"))
+body.append(li("个人资料：头像（预设/上传）、姓名、邮箱、手机号、个人简介的查看与修改；密码修改。"))
+body.append(li("评分与评论：商品星级评分历史与评论历史的查看、新增、修改、删除。"))
+body.append(li("模型设置：检测模型与量化方案的偏好选择，联动监控识别页的模型徽章显示。"))
+
+body.append(h3("8．结构化需求"))
+body.append(p("本平台采用前后端分离的 B/S 架构。浏览器中的 Vue 3 单页应用经 Vite 开发服务器（:5180）加载，页面数据经 /api 前缀代理到数据服务（:8001，FastAPI+SQLite），检测请求经 /det 前缀代理到检测服务（:8000，YOLOv11x 推理），商品照片经 /imgapi 前缀代理到图片服务（:8011）。数据服务持有一个 SQLite 数据库文件（shangyu.db，14 张表），是全部业务数据的唯一数据源；检测服务加载 RPC 200 类检测权重完成推理并按迁移的价格目录实时计价；销售预测的训练管线（train_forecast.py）从真实数据集离线训练并产出预测产物（forecast_model.json）供数据服务读取。生产部署时，将前端构建产物 dist/ 交由任意静态服务器托管，并将三个前缀反向代理到对应后端服务。"))
+
+body.append(h3("9．目标系统界面与接口需求"))
+body.append(h4("9.1 界面需求"))
+body.append(p("平台界面遵循统一的深空蓝科技风设计规范，主要界面清单如下表所示："))
+body.append(table([1800, 2500, 4705],
+                  ["界面", "路由", "说明"],
+                  [["登录/注册", "/login", "账号密码登录、注册（验证码演示）、演示账号提示"],
+                   ["总览大屏", "/overview", "KPI 卡片、区域对比、周趋势、品类占比、商品排行、库存预警"],
+                   ["监控识别", "/monitor", "摄像头/图片识别、检测框叠加、识别清单、结算金额、事件记录、抓拍"],
+                   ["商品管理", "/products", "商品列表（筛选/分页）、新增/编辑/删除、补货与调整、批量导入"],
+                   ["商品详情", "/product/:id", "商品属性、照片管理、月度销售/利润趋势、评分评论"],
+                   ["区域详情", "/region/:id", "区域 KPI、周趋势、商品排行、库存预警、品类分布、区域摄像头"],
+                   ["区域商品排行", "/region/:id/rank", "全部商品完整属性排行表，右侧滑动条上下浏览"],
+                   ["销售预测", "/forecast", "预测曲线、回测指标、补货建议卡片、商品明细与风险分布"],
+                   ["订单管理", "/orders", "订单筛选/分页/详情/导出、近 7 天趋势"],
+                   ["库存管理", "/inventory", "多门店库存、状态分布、补货/调整、批量导入"],
+                   ["预警中心", "/alerts", "三类预警筛选、处理/忽略、级别分布"],
+                   ["系统设置/用户中心", "/settings、/user-center", "平台设置分组、个人资料、评分评论、模型设置"]]))
+body.append(h4("9.2 接口需求列表"))
+body.append(p("系统主要 REST 接口如下表所示（完整接口定义见数据服务交互文档 /docs，合计约 85 个）："))
+body.append(table([700, 3050, 1900, 2155],
+                  ["方法", "路径", "功能", "备注"],
+                  [["POST", "/api/login（/api/auth/login）", "登录鉴权", "返回 Bearer Token"],
+                   ["GET", "/api/products", "商品分页列表", "支持区域/品类/状态/关键字筛选"],
+                   ["POST/PUT/DELETE", "/api/products/{id}", "商品新增/编辑/删除", "自动计算派生字段"],
+                   ["PUT", "/api/products/{id}/stock", "库存调整", "状态自动重算"],
+                   ["GET", "/api/products/{id}", "商品详情", "含图片路径"],
+                   ["GET", "/api/regions/{slug}/detail", "区域详情", "KPI/排行/趋势/品类分布"],
+                   ["GET", "/api/regions/{slug}/rank", "区域全部商品排行", "销量降序全量"],
+                   ["GET", "/api/overview", "总览聚合", "KPI/趋势/占比/排行"],
+                   ["GET", "/api/forecast", "销售预测", "模型产物驱动"],
+                   ["GET", "/api/orders", "订单分页列表", "多条件筛选"],
+                   ["POST", "/api/orders", "创建订单", "行项目自动计价"],
+                   ["GET", "/api/orders/trend", "近 7 天订单趋势", "订单量/销售额"],
+                   ["GET", "/api/alerts", "预警列表", "类型/级别/状态筛选"],
+                   ["PUT", "/api/alerts/{id}", "预警处理/忽略", "状态更新"],
+                   ["POST", "/api/inventory/movements", "出入库登记", "联动库存与状态"],
+                   ["GET/POST", "/api/recognition/logs", "识别事件流", "查询/检测端回传"],
+                   ["GET", "/api/analytics/dashboard", "经营分析 KPI", "多维聚合"],
+                   ["GET", "/api/reports/products/export", "商品目录导出", "CSV/XLSX"],
+                   ["POST", "/det/detect", "商品检测", "返回框/清单/结算总额"],
+                   ["GET", "/det/health", "检测服务健康检查", "模型/设备信息"]]))
+
+# ---------------- 组装 ----------------
+d = open(SRC, encoding="utf-8").read()
+blocks = re.findall(r"<w:p\b.*?</w:p>|<w:tbl>.*?</w:tbl>|<w:sectPr[^>]*>.*?</w:sectPr>|<w:sectPr[^>]*/>", d, re.S)
+assert len(blocks) == 367, len(blocks)
+
+# 1) 封面与大标题（块 0..34）文本替换（按块精准定位，字段值多为独立文本节点）
+blocks_prefix = blocks[:35]
+
+
+def blk_sub(idx, old, new):
+    assert old in blocks_prefix[idx], (idx, old)
+    blocks_prefix[idx] = blocks_prefix[idx].replace(old, new)
+
+
+blk_sub(4, "XXX项目", "商域智检——智能零售全链路优化平台")
+blk_sub(8, "XXX项目组", "商域智检项目组")
+blk_sub(21, ">项目名称：</w:t>", ">项目名称：商域智检——智能零售全链路优化平台</w:t>")
+blk_sub(22, ">： </w:t>", ">：XXX</w:t>")
+blk_sub(23, ">：</w:t>", ">：XXX、XXX、XXX、XXX、XXX</w:t>")
+blk_sub(24, ">编写日期：</w:t>", ">编写日期：2026 年 9 月</w:t>")
+blk_sub(34, "&#x201C;小型二手货交易平台&#x201D;需求规格说明书",
+        "&#x201C;商域智检——智能零售全链路优化平台&#x201D;需求说明书")
+prefix = "".join(blocks_prefix)
+
+# 2) 成员分工表（块 30）重填
+team_rows = [["XXX（组长）", "项目总体设计、进度管理、三服务架构与数据库设计", "已完成"],
+             ["XXX", "CBSM-YOLO 模型维护、RPC 模型与数据迁移、销售预测模型训练回测", "已完成"],
+             ["XXX", "Vue3 前端 11 个页面开发、ECharts 可视化与交互组件实现", "已完成"],
+             ["XXX", "FastAPI 数据/检测/图片服务与 85 个 REST 接口开发", "已完成"],
+             ["XXX", "功能测试、端到端验证与需求说明书撰写维护", "已完成"]]
+tbl_old = blocks[30]
+tbl_new = table([1117, 4698, 1990], ["姓名", "负责内容", "完成情况"], team_rows)
+assert tbl_old in prefix
+prefix = prefix.replace(tbl_old, tbl_new)
+
+# 3) 目录静态行（块 35..78 替换；79 为域 end，保留）
+toc = [("1", "1．引言", "1"), ("2", "1.1 编写目的", "1"), ("2", "1.2 项目背景", "1"),
+       ("1", "2．任务概述", "2"), ("2", "2.1 目标", "2"), ("2", "2.2 用户特点", "2"),
+       ("2", "2.3 术语定义", "3"), ("2", "2.4 参考资料", "3"), ("2", "2.5 相关文档", "4"),
+       ("2", "2.6 版本更新信息", "4"),
+       ("1", "3．现有系统描述", "4"), ("2", "3.1 角色定义", "4"), ("2", "3.2 作业流程", "4"),
+       ("2", "3.3 单据、账本和报表", "5"), ("2", "3.4 可能的变化", "5"),
+       ("1", "4．非技术要求", "5"),
+       ("1", "5．系统环境", "6"), ("2", "5.1 硬件运行环境", "6"), ("2", "5.2 软件运行环境", "6"),
+       ("2", "5.3 开发环境", "6"),
+       ("1", "6．非功能性需求", "7"), ("2", "6.1 正确性需求", "7"), ("2", "6.2 安全性需求", "7"),
+       ("2", "6.3 界面需求", "7"), ("2", "6.4 数据要求", "7"), ("2", "6.5 稳定性需求", "8"),
+       ("2", "6.6 灵活性需求", "8"), ("2", "6.7 扩展性需求", "8"), ("2", "6.8 数据管理能力需求", "8"),
+       ("2", "6.9 故障处理能力需求", "8"), ("2", "6.10 特殊需求", "8"),
+       ("1", "7．功能需求", "9"), ("2", "7.1 子系统划分", "9"), ("2", "7.2 用例说明", "10"),
+       ("2", "7.3 总览大屏子系统", "12"), ("2", "7.4 监控识别子系统", "12"),
+       ("2", "7.5 商品与区域子系统", "13"), ("2", "7.6 销售预测子系统", "13"),
+       ("2", "7.7 订单与库存子系统", "14"), ("2", "7.8 预警与设置子系统", "14"),
+       ("2", "7.9 用户中心子系统", "14"),
+       ("1", "8．结构化需求", "15"),
+       ("1", "9．目标系统界面与接口需求", "15"), ("2", "9.1 界面需求", "15"), ("2", "9.2 接口需求列表", "16")]
+toc_xml = toc_line(1, "1．引言", "1", first=True)
+for lv, txt, pg in toc[1:]:
+    toc_xml += toc_line(int(lv), txt, pg)
+
+# 4) 正文（块 80..365 替换，366 为最终 sectPr 保留）
+body_xml = "".join(body)
+
+# 4) 组装：文件头（xml 声明+根元素） + 替换后封面 + 新目录 + 目录域结束段 + 新正文 + sectPr 与结束标签
+prolog = d[:d.find(blocks[0])]
+out = prolog + prefix + toc_xml + blocks[79] + body_xml + blocks[366] + "</w:body></w:document>"
+open(SRC, "w", encoding="utf-8").write(out)
+print("document.xml written, new size:", len(out))
